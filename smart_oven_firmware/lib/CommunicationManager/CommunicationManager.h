@@ -24,6 +24,14 @@
 #define OVEN_PROGRAM_CHARACTERISTIC_UUID    "0000ffe2-0000-1000-8000-00805f9b34fb"
 #define OVEN_STATUS_CHARACTERISTIC_UUID    "0000ffe3-0000-1000-8000-00805f9b34fb"
 
+enum OvenStatus {
+    IDLE_STATUS,
+    START_STATUS,
+    STOP_STATUS,
+    RESTART_STATUS,
+    ERROR_STATUS,
+};
+
 class CommunicationManager {
 private:
     class ServerCallbacks : public BLEServerCallbacks {
@@ -51,9 +59,10 @@ private:
     BLECharacteristic *pOvenProgramCharacteristic = NULL;
     BLECharacteristic *pOvenStatusCharacteristic = NULL;
     CircularFifo<std::pair<float,uint32_t>, 100> ovenDataFifo; // Circular FIFO for oven data
-    CircularFifo<uint8_t, 100> ovenStatusFifo; // Circular FIFO
+    CircularFifo<OvenStatus, 100> ovenStatusFifo; // Circular FIFO
     TemperatureCurve currentCurve;
     bool deviceConnected = false;
+    bool connectionStatusChanged = false;
     bool programReceived = false;
 
 public:
@@ -65,12 +74,14 @@ public:
     void sendOvenStatus();
 
     void pushOvenData(float temperature, uint32_t time);
-    void pushOvenStatus(uint8_t status);
+    void pushOvenStatus(OvenStatus status);
 
+    bool isConnectionStatusChanged() ;
     bool isDeviceConnected() const;
     bool isprogramReceived() const;
 
-    uint8_t getOvenStatus(uint8_t &status) const;
+
+    OvenStatus getOvenStatus() const;
     TemperatureCurve getCurrentCurve() const;
 };
 

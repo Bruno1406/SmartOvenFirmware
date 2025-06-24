@@ -56,6 +56,9 @@ void TemperatureManager::runProgram() {
         isRunning = false; // Stop heating after the program ends
     }
     controlHeating();
+    if(currentTime >= (currentCurve.rampUpDuration + currentCurve.holdDuration + currentCurve.coolDownDuration)) {
+        isRunning = false; // Stop the program if the total duration is reached
+    }
 }
 
 void TemperatureManager::stopProgram() {
@@ -82,6 +85,10 @@ float TemperatureManager::getTargetTemperature() const {
 
 bool TemperatureManager::getFailStatus() const {
     return failStatus;
+}
+
+bool TemperatureManager::isProgramFinished() const {
+    return !isRunning && currentTime >= (currentCurve.rampUpDuration + currentCurve.holdDuration + currentCurve.coolDownDuration);
 }
 
 void TemperatureManager::setTemperatureCurve(const TemperatureCurve curve) {

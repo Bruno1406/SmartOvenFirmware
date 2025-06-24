@@ -40,6 +40,7 @@ public:
     std::pair<float,uint32_t> getHeatingData() const;
     float getTargetTemperature() const;
     bool getFailStatus() const;
+    bool isProgramFinished() const;
 private:
     float readTemperature() const;
     void controlHeating();

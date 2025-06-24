@@ -43,6 +43,7 @@
     );
     pOvenStatusCharacteristic->addDescriptor(new BLE2902());
     pOvenStatusCharacteristic->setCallbacks(new CharacteristicCallbacks(this));
+    pOvenStatusCharacteristic->setValue(static_cast<uint8_t>(IDLE)); // Initialize with IDLE status
 
     // Start the service
     pService->start();
@@ -90,19 +91,18 @@ void CommunicationManager::pushOvenData(float temperature, uint32_t time) {
     ovenDataFifo.push(std::make_pair(temperature, time));
 }
 
-void CommunicationManager::pushOvenStatus(uint8_t status) {
+void CommunicationManager::pushOvenStatus(OvenStatus status) {
     ovenStatusFifo.push(status);
 }
 
-uint8_t CommunicationManager::getOvenStatus(uint8_t &status) const {
+OvenStatus CommunicationManager::getOvenStatus() const {
     if (pOvenStatusCharacteristic) {
         std::string value = pOvenStatusCharacteristic->getValue();
         if (value.length() > 0) {
-            status = value[0]; // Assuming the status is a single byte
-            return 0; // Success
+            return static_cast<OvenStatus>(value[0]); // Assuming the first byte represents the status
         }
     }
-    return 0xff; // Error: characteristic not available or no value
+    return IDLE; // Error: characteristic not available or no value
 }
 
 TemperatureCurve CommunicationManager::getCurrentCurve() const {
@@ -117,13 +117,20 @@ bool CommunicationManager::isprogramReceived() const {
     return programReceived;
 }
 
+bool CommunicationManager::isConnectionStatusChanged() {
+    bool connectionStatusChanged = this->connectionStatusChanged;
+    this->connectionStatusChanged = false; // Reset the flag after checking
+    return connectionStatusChanged;
+}
+
 void CommunicationManager::ServerCallbacks::onConnect(BLEServer *pServer) {
-    Serial.println("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA");
     manager->deviceConnected = true;
+    manager->connectionStatusChanged = true; // Set the connection status changed flag
 }
 
 void CommunicationManager::ServerCallbacks::onDisconnect(BLEServer *pServer) {
     manager->deviceConnected = false;
+    manager->connectionStatusChanged = true; // Set the connection status changed flag
     BLEDevice::startAdvertising(); // Restart advertising after disconnection
 }
 
