@@ -2,23 +2,14 @@
  * @file main.cpp
  * @author your name (you@domain.com)
  * @brief 
- * @version 0.1
- * @date 2025-06-23
- * 
- * @copyright Copyright (c) 2025
- * 
- */
+ * @version 0.2
+ * @date 2025-06-24
+ * * @copyright Copyright (c) 2025
+ * */
 
 #include <Arduino.h>
 #include <CommunicationManager.h>
 #include <TemperatureManager.h>
-#include <math.h>
-
-
-
-#define R0 10000
-#define B 3380
-#define T0 297
 
 enum FSMState {
   WAITING_FOR_CONNECTION,
@@ -117,10 +108,7 @@ TemperatureManager tempManager;
 
 QueueHandle_t xQueuDataComm;
 QueueHandle_t xQueueStatusComm;
-// QueueHandle_t xQueuDataHMI;
-// QueueHandle_t  xQueueStatusHMI;
 QueueHandle_t  xQueueProgram;
-
 QueueHandle_t xQueuEvent;
 SemaphoreHandle_t xStateMutex;
 FSMState currentState = WAITING_FOR_CONNECTION;
@@ -172,73 +160,120 @@ void taskCommunication(void *pvParameters) {
   }
 }
 
-void taskTemperature(void *pvParameters) {
-  static portTickType lastWakeTime;
-  static std::pair<float, uint32_t> newOvenData;
-  lastWakeTime = xTaskGetTickCount();
+void taskControlLoop(void *pvParameters) {
+  static portTickType lastWakeTime = xTaskGetTickCount();
+  const TickType_t controlPeriod = pdMS_TO_TICKS(10);
   FSMEvent event;
-  FSMState currentStateCopy;
-  TemperatureCurve currentCurve;
-  OvenStatus newOvenStatus;
+
   while (true) {
-    xSemaphoreTake(xStateMutex, portMAX_DELAY); // Take the mutex to protect the state change
-    currentStateCopy = currentState; // Copy the current state
-   
+    FSMState currentStateCopy;
+    xSemaphoreTake(xStateMutex, portMAX_DELAY);
+    currentStateCopy = currentState;
+    xSemaphoreGive(xStateMutex);
+    
     switch (currentStateCopy) {
-      case WAITING_FOR_CONNECTION:
-        // Do nothing, waiting for connection
-        break;
-      case WAITING_FOR_PROGRAM:
-        // Do nothing, waiting for program
-        break;
       case WAITING_FOR_START:
-        if(xQueueReceive(xQueueProgram, &currentCurve, 0)) {
-          tempManager.setTemperatureCurve(currentCurve); // Set the temperature curve
+        // Load the new temperature profile when it arrives.
+        TemperatureCurve tempCurve;
+        if(xQueueReceive(xQueueProgram, &tempCurve, 0)) {
+          tempManager.setTemperatureCurve(tempCurve);
         }
         break;
+
       case RUNNING:
-        if(tempManager.getFailStatus()) {
-          event = PROGRAM_ERROR; // If there is a failure, send the error event
-          xQueueSend(xQueuEvent, &event, 0); // Send event to FSM
+        // This is the core work of this task.
+        if (tempManager.getFailStatus()) {
+          event = PROGRAM_ERROR;
+          xQueueSend(xQueuEvent, &event, 0);
         } else if (tempManager.isProgramFinished()) {
-          tempManager.stopProgram(); // Stop the temperature program
-          event = PROGRAM_FINISHED; // If the program is finished, send the finished event
-          xQueueSend(xQueuEvent, &event, 0); // Send event to FSM
+          event = PROGRAM_FINISHED;
+          xQueueSend(xQueuEvent, &event, 0);
         } else {
-          tempManager.runProgram(); // Run the temperature program
-          newOvenData = tempManager.getHeatingData(); // Get the heating data
-          xQueueSend(xQueuDataComm, &newOvenData, 0); // Send the heating data to the communication manager
+          // Only execute the heater control logic.
+          tempManager.runProgram();
         }
         break;
-      case FINISHED:
-        tempManager.stopProgram(); // Stop the temperature program
-        newOvenStatus = STOP_STATUS; // Set the oven status to FINISHED
-        xQueueSend(xQueueStatusComm, &newOvenStatus, portMAX_DELAY);
-        break;
-      case ERROR:
-        tempManager.stopProgram(); // Stop the temperature program
-        newOvenStatus = ERROR_STATUS; // Set the oven status to ERROR
-        xQueueSend(xQueueStatusComm, &newOvenStatus, portMAX_DELAY);
-      break;
+        
       default:
-        Serial.println("Unknown state!"); // Handle unknown state
+        // No control actions needed in other states.
         break;
     }
-    xSemaphoreGive(xStateMutex); // Release the mutex
-    vTaskDelayUntil(&lastWakeTime, 10 / portTICK_PERIOD_MS);
+    vTaskDelayUntil(&lastWakeTime, controlPeriod);
   }
 }
 
+void taskDataSampler(void *pvParameters) {
+    static portTickType lastWakeTime = xTaskGetTickCount();
+    const TickType_t samplingPeriod = pdMS_TO_TICKS(1000);
+
+    while (true) {
+        FSMState currentStateCopy;
+        xSemaphoreTake(xStateMutex, portMAX_DELAY);
+        currentStateCopy = currentState;
+        xSemaphoreGive(xStateMutex);
+
+        // Only sample and send data when the program is running.
+        if (currentStateCopy == RUNNING) {
+            std::pair<float, uint32_t> newOvenData = tempManager.getHeatingData();
+            // Send to communication task using a non-blocking send.
+            xQueueSend(xQueuDataComm, &newOvenData, 0);
+        }
+
+        vTaskDelayUntil(&lastWakeTime, samplingPeriod);
+    }
+}
 
 void taskFSM(void *pvParameters) {
   FSMEvent event;
+  OvenStatus newOvenStatus;
+  const TickType_t queueTimeout = pdMS_TO_TICKS(20);
+
   while (true) {
+    // Block and wait for a new event to process.
     if (xQueueReceive(xQueuEvent, &event, portMAX_DELAY)) {
-      xSemaphoreTake(xStateMutex, portMAX_DELAY); // Take the mutex to protect the state change
-      FSMState nextState = transitionMatrix[currentState][event];
-      Serial.printf("Transitioning from %d to %d on event %d\n", currentState, nextState, event);
-      currentState = nextState; // Update the current state
-      xSemaphoreGive(xStateMutex); // Release the mutex
+      xSemaphoreTake(xStateMutex, portMAX_DELAY);
+
+      FSMState previousState = currentState;
+      currentState = transitionMatrix[previousState][event];
+
+      // If a state transition actually occurred, execute its entry action.
+      if (currentState != previousState) {
+        Serial.printf("Transitioning from %d to %d on event %d\n", previousState, currentState, event);
+
+        switch (currentState) {
+          case WAITING_FOR_START:
+            // Entry Action: Ensure the heater is off while waiting for a program/start signal.
+            tempManager.stopProgram();
+            TemperatureCurve tempCurve;
+            if(xQueueReceive(xQueueProgram, &tempCurve, 0)) {
+              tempManager.setTemperatureCurve(tempCurve);
+            }
+            break;
+          
+          case FINISHED:
+            // Entry Action: Stop the heater and notify the communication task.
+            tempManager.stopProgram();
+            newOvenStatus = STOP_STATUS;
+            xQueueSend(xQueueStatusComm, &newOvenStatus, queueTimeout);
+            break;
+
+          case ERROR:
+            // Entry Action: Stop the heater and notify the communication task.
+            tempManager.stopProgram();
+            newOvenStatus = ERROR_STATUS;
+            xQueueSend(xQueueStatusComm, &newOvenStatus, queueTimeout);
+            break;
+
+          // No specific entry actions needed for other states.
+          case WAITING_FOR_CONNECTION:
+          case WAITING_FOR_PROGRAM:
+          case RUNNING:
+          default:
+            break;
+        }
+      }
+      
+      xSemaphoreGive(xStateMutex);
     }
   }
 }
@@ -246,28 +281,24 @@ void taskFSM(void *pvParameters) {
 void setup() {
   Serial.begin(115200);
   delay(1000); // Wait for serial to initialize
-  Serial.println("Starting Oven work!");
-  commManager.init();  // Initialize the communication manager
-  tempManager.init();  // Initialize the temperature manager
-  xQueuDataComm = xQueueCreate(10, sizeof(std::pair<float, uint32_t>)); // Create a queue for oven data
-  xQueueStatusComm = xQueueCreate(10, sizeof(OvenStatus)); // Create a queue for oven status
-  xQueueProgram = xQueueCreate(10, sizeof(TemperatureCurve)); // Create a queue for oven program
-  xStateMutex = xSemaphoreCreateMutex(); // Create a mutex for state protection
-  delay(100);
+  Serial.println("Starting Oven work! Version 0.3");
+  commManager.init();
+  tempManager.init();
+  
+  // Create all necessary queues and mutexes.
+  xQueuDataComm = xQueueCreate(10, sizeof(std::pair<float, uint32_t>));
+  xQueueStatusComm = xQueueCreate(10, sizeof(OvenStatus));
+  xQueueProgram = xQueueCreate(1, sizeof(TemperatureCurve)); // A program queue of 1 is sufficient.
+  xQueuEvent = xQueueCreate(10, sizeof(FSMEvent));
+  xStateMutex = xSemaphoreCreateMutex();
+  
+  // Create all the application tasks.
   xTaskCreate(taskCommunication, "Communication", 4096, NULL, 1, NULL );
-  xTaskCreate(taskTemperature, "Temperature", 4096, NULL, 1, NULL );
-  xTaskCreate(taskFSM, "FSM", 2048, NULL, 2, NULL ); // Add this line!
-
+  xTaskCreate(taskFSM, "FSM", 2048, NULL, 2, NULL ); 
+  xTaskCreate(taskControlLoop, "ControlLoop", 4096, NULL, 2, NULL ); 
+  xTaskCreate(taskDataSampler, "DataSampler", 2048, NULL, 1, NULL ); 
 }
 
 void loop() {
-//     digitalWrite(RELAY_PIN, LOW); // Turn on the relay to start heating
-//     int rawValue = analogRead(TERMOPAR_PIN);
-//     float voltage = (rawValue / 4095.0f) * 3.9f; // Convert ADC value to voltage
-//     float req= (33000 / voltage) - 10000; // Calculate resistance on the port
-//     float r = (10500*req) / (10500-req); // Calculate the resistance of the thermistor
-//     float temperature = B / log(r / (R0 * exp(-B / T0))) - 273.15f; // Convert raw ADC value to temperature in Celsius
-//     Serial.printf("Raw Value: %d, Voltage: %.2f V, Resistance: %.2f Ohm, Temperature: %.2f C\n", rawValue, voltage, r, temperature);
-//     delay(1000); // Delay for 1 second to avoid flooding the serial output
-// }
+  // Intentionally empty. The RTOS scheduler handles all work.
 }
