@@ -41,8 +41,8 @@ public:
     float getTargetTemperature() const;
     bool getFailStatus() const;
     bool isProgramFinished() const;
-private:
     float readTemperature() const;
+private:
     void controlHeating();
 };  
 

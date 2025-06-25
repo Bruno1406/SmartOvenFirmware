@@ -28,7 +28,6 @@ enum OvenStatus {
     IDLE_STATUS,
     START_STATUS,
     STOP_STATUS,
-    RESTART_STATUS,
     ERROR_STATUS,
 };
 
@@ -61,6 +60,7 @@ private:
     CircularFifo<std::pair<float,uint32_t>, 100> ovenDataFifo; // Circular FIFO for oven data
     CircularFifo<OvenStatus, 100> ovenStatusFifo; // Circular FIFO
     TemperatureCurve currentCurve;
+    OvenStatus currentOvenStatus = IDLE_STATUS; // Current oven status
     bool deviceConnected = false;
     bool connectionStatusChanged = false;
     bool programReceived = false;

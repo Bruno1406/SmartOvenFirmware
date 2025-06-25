@@ -43,7 +43,6 @@
     );
     pOvenStatusCharacteristic->addDescriptor(new BLE2902());
     pOvenStatusCharacteristic->setCallbacks(new CharacteristicCallbacks(this));
-    pOvenStatusCharacteristic->setValue(static_cast<uint8_t>(IDLE)); // Initialize with IDLE status
 
     // Start the service
     pService->start();
@@ -96,13 +95,7 @@ void CommunicationManager::pushOvenStatus(OvenStatus status) {
 }
 
 OvenStatus CommunicationManager::getOvenStatus() const {
-    if (pOvenStatusCharacteristic) {
-        std::string value = pOvenStatusCharacteristic->getValue();
-        if (value.length() > 0) {
-            return static_cast<OvenStatus>(value[0]); // Assuming the first byte represents the status
-        }
-    }
-    return IDLE; // Error: characteristic not available or no value
+    return currentOvenStatus; // Return the current oven status
 }
 
 TemperatureCurve CommunicationManager::getCurrentCurve() const {
@@ -137,20 +130,24 @@ void CommunicationManager::ServerCallbacks::onDisconnect(BLEServer *pServer) {
 void CommunicationManager::CharacteristicCallbacks::onWrite(BLECharacteristic *pCharacteristic) {
     Serial.printf("Characteristic %s written\n", pCharacteristic->getUUID().toString().c_str());
     if(pCharacteristic == manager->pOvenProgramCharacteristic) {
-        std::string value = pCharacteristic->getValue();
-        if (value.length() >= sizeof(TemperatureCurve)) {
-            // Assuming the value is a serialized TemperatureCurve
-            memcpy(&manager->currentCurve, value.data(), sizeof(TemperatureCurve));
-            Serial.printf("Received new temperature curve: start=%f, target=%f, end=%f, rampUp=%u, hold=%u, coolDown=%u\n",
-                          manager->currentCurve.targetTemperature,
-                          manager->currentCurve.endTemperature,
-                          manager->currentCurve.rampUpDuration,
-                          manager->currentCurve.holdDuration,
-                          manager->currentCurve.coolDownDuration);
-        } else {
-            Serial.println("Received invalid temperature curve data.");
+        uint8_t* buffer = pCharacteristic->getData();
+        for(int i = 0; i < pCharacteristic->getLength(); i++) {
+            Serial.printf("%02X ", buffer[i]); // Print the received data in hex format
         }
+        manager->currentCurve.targetTemperature = (static_cast<float>(buffer[0] | (buffer[1] << 8 | (buffer[2] << 16) | (buffer[3] << 24))) / 100.0f); // Convert to float
+        manager->currentCurve.endTemperature = (static_cast<float>(buffer[4] | (buffer[5] << 8 | (buffer[6] << 16) | (buffer[7] << 24))) / 100.0f); // Convert to float
+        manager->currentCurve.rampUpDuration = (buffer[8] | (buffer[9] << 8 | (buffer[10] << 16) | (buffer[11] << 24))); // Convert to uint32_t
+        manager->currentCurve.holdDuration = (buffer[12] | (buffer[13] << 8 | (buffer[14] << 16) | (buffer[15] << 24))); // Convert to uint32_t
+        manager->currentCurve.coolDownDuration = (buffer[16] | (buffer[17] << 8 | (buffer[18] << 16) | (buffer[19] << 24))); // Convert to uint32_t
+        manager->programReceived = true;
+        Serial.println(); 
     }
+    if (pCharacteristic == manager->pOvenStatusCharacteristic) {
+        uint8_t* value = pCharacteristic->getData();
+        manager->currentOvenStatus =  static_cast<OvenStatus>(value[0]); // Assuming the first byte represents the status
+        Serial.printf("Oven status updated: %d\n", manager->currentOvenStatus);
+    }
+    
 }
 
 void CommunicationManager::CharacteristicCallbacks::onRead(BLECharacteristic *pCharacteristic) {

@@ -67,7 +67,7 @@ void TemperatureManager::stopProgram() {
 }
 
 float TemperatureManager::readTemperature() const {
-    int rawValue = analogRead(TERMOPAR_PIN);
+    int rawValue = (float)analogRead(TERMOPAR_PIN);
     float voltage = (rawValue / 4095.0f) * 3.9f; // Convert ADC value to voltage
     float req= (33000 / voltage) - 10000; // Calculate resistance on the port
     float r = (10500*req) / (10500-req); // Calculate the resistance of the thermistor
